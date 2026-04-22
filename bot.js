@@ -1,10 +1,10 @@
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys')
-const { Boom } = require('@hapi/boom')
 const supabase = require('./supabase')
 const pino = require('pino')
 
 let sock = null
 let qrCode = null
+let pairingCode = null
 let isConnected = false
 
 async function updateStatus(is_online, is_connected) {
@@ -14,13 +14,14 @@ async function updateStatus(is_online, is_connected) {
     .eq('id', (await supabase.from('bot_status').select('id').single()).data.id)
 }
 
-async function startBot() {
+async function startBot(phoneNumber = null) {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info')
 
   sock = makeWASocket({
     auth: state,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: false
+    printQRInTerminal: false,
+    mobile: false
   })
 
   sock.ev.on('connection.update', async (update) => {
@@ -29,22 +30,36 @@ async function startBot() {
     if (qr) {
       const QRCode = require('qrcode')
       qrCode = await QRCode.toDataURL(qr)
-      console.log('QR generated')
+      pairingCode = null
+
+      if (phoneNumber && !sock.authState.creds.registered) {
+        try {
+          const code = await sock.requestPairingCode(phoneNumber)
+          pairingCode = code
+          qrCode = null
+          console.log('Pairing code:', code)
+        } catch (e) {
+          console.log('Pairing code error:', e)
+        }
+      }
     }
 
     if (connection === 'close') {
       isConnected = false
+      qrCode = null
+      pairingCode = null
       await updateStatus(false, false)
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
       if (shouldReconnect) {
         console.log('Reconnecting...')
-        setTimeout(startBot, 3000)
+        setTimeout(() => startBot(), 3000)
       }
     }
 
     if (connection === 'open') {
       isConnected = true
       qrCode = null
+      pairingCode = null
       await updateStatus(true, true)
       console.log('Bot connected!')
     }
@@ -92,7 +107,8 @@ async function startBot() {
 }
 
 function getQR() { return qrCode }
+function getPairingCode() { return pairingCode }
 function getStatus() { return isConnected }
 function getSock() { return sock }
 
-module.exports = { startBot, getQR, getStatus, getSock }
+module.exports = { startBot, getQR, getPairingCode, getStatus, getSock }
